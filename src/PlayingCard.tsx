@@ -1,4 +1,3 @@
-// src/PlayingCard.tsx
 import * as React from "react";
 import { Canvas, useFrame, extend, useThree } from "@react-three/fiber";
 import { useTexture, shaderMaterial } from "@react-three/drei";
@@ -8,7 +7,7 @@ import type { ThreeEvent } from "@react-three/fiber";
 
 // --- Type Definitions ---
 type Rarity = "common" | "uncommon" | "rare" | "legendary";
-export type CardLightingEffect = "none" | "flatSheen" | "normalMap"; // New type for prop
+export type CardLightingEffect = "none" | "flatSheen" | "normalMap";
 
 export interface CardShaderMaterialUniforms {
   uTime?: number;
@@ -20,31 +19,24 @@ export interface CardShaderMaterialUniforms {
   uHover?: number;
   uEffectOverlay?: number;
   uCornerRadius?: number;
-  uLightingMode?: number; // <-- NEW: 0=none, 1=flatSheen, 2=normalMap
+  uLightingMode?: number;
+  uIsActive?: number; // 0.0 for static, 1.0 for active
 }
 
 export type CardShaderMaterialType = THREE.ShaderMaterial &
   CardShaderMaterialUniforms;
 
-interface PlayingCardProps {
+// Props for the mesh, assuming it's used within a larger canvas
+export interface CardMeshProps {
+  key?: string; // For React lists
   rarity?: Rarity;
   frontImage?: string;
   contentImage?: string;
   contentNormalMap?: string;
-  style?: React.CSSProperties;
   effectOverlay?: number;
   cornerRadius?: number;
-  lightingEffect?: CardLightingEffect; // <-- NEW Prop
-}
-
-interface CardMeshProps {
-  rarity: Rarity;
-  frontImage: string;
-  contentImage: string;
-  contentNormalMap: string;
-  effectOverlay: number;
-  cornerRadius: number;
-  lightingEffect: CardLightingEffect; // <-- NEW Prop
+  lightingEffect?: CardLightingEffect;
+  position?: [number, number, number];
 }
 
 // --- Shader Definition ---
@@ -60,7 +52,8 @@ export const CardShaderMaterial = shaderMaterial<CardShaderMaterialUniforms>(
     uHover: 0.0,
     uEffectOverlay: 1.0,
     uCornerRadius: 0.05,
-    uLightingMode: 2.0, // Default to normalMap lighting (2.0)
+    uLightingMode: 2.0, // Default to normalMap lighting
+    uIsActive: 0.0, // Default to inactive/static
   },
   // Vertex Shader
   `
@@ -70,7 +63,7 @@ export const CardShaderMaterial = shaderMaterial<CardShaderMaterialUniforms>(
       gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
     }
   `,
-  // Fragment Shader (COMPLETE AND FIXED with new lighting logic)
+  // Fragment Shader
   `
     precision mediump float;
 
@@ -87,6 +80,7 @@ export const CardShaderMaterial = shaderMaterial<CardShaderMaterialUniforms>(
     uniform float uEffectOverlay;
     uniform float uCornerRadius;
     uniform float uLightingMode; // 0.0 = none, 1.0 = flatSheen, 2.0 = normalMap
+    uniform float uIsActive;   // NEW: 0.0 for static, 1.0 for active
 
     varying vec2 vUv;
 
@@ -156,7 +150,6 @@ export const CardShaderMaterial = shaderMaterial<CardShaderMaterialUniforms>(
         return 10.9 * n;
     }
 
-    // Easing functions
     float bounceOut(in float t) {
         const float n1 = 7.5625;
         const float d1 = 2.75;
@@ -167,7 +160,6 @@ export const CardShaderMaterial = shaderMaterial<CardShaderMaterialUniforms>(
     }
     float bounceIn(float t) { return 1.0 - bounceOut(1.0 - t); }
 
-    // Rotation function
     vec2 rot(vec2 v, float a){
         float s = sin(a);
         float c = cos(a);
@@ -175,13 +167,11 @@ export const CardShaderMaterial = shaderMaterial<CardShaderMaterialUniforms>(
         return m * v;
     }
 
-    // SDF for Rounded Box
     float sdRoundedBox( vec2 p, vec2 b, float r ) {
         vec2 q = abs(p)-b+r;
         return min(max(q.x,q.y),0.0) + length(max(q,0.0)) - r;
     }
 
-    // Function for Uncommon Effect Logic
     vec3 calculateUncommonEffect(vec2 uvCoord, float time, vec2 mouse) {
         vec2 uv = (uvCoord - 0.5) * 2.0;
         uv -= UNCOMMON_OFFSET;
@@ -216,19 +206,17 @@ export const CardShaderMaterial = shaderMaterial<CardShaderMaterialUniforms>(
         return finalUncommonColor;
     }
 
-    // Simple pseudo-random noise (used for Rare sparkle)
     float noise(vec2 p) {
       return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
     }
 
-    // Lighting calculation function
     vec3 calculateLighting(vec3 surfaceColor, vec3 surfaceNormal, vec3 lightDir, vec3 lightColor, float ambientStrength, float specularStrength) {
         float diff = max(dot(surfaceNormal, lightDir), 0.0);
         vec3 diffuse = diff * lightColor;
         vec3 ambient = ambientStrength * lightColor;
-        vec3 viewDir = normalize(vec3(-uMouse.x, -uMouse.y, 1.0));
+        vec3 viewDir = normalize(vec3(-uMouse.x * 0.5, -uMouse.y * 0.5, 1.0)); // Adjusted for interactive tilt
         vec3 reflectDir = reflect(-lightDir, surfaceNormal);
-        float spec = pow(max(dot(viewDir, reflectDir), 0.0), 16.0);
+        float spec = pow(max(dot(viewDir, reflectDir), 0.0), 32.0); // Increased shininess
         vec3 specular = specularStrength * spec * lightColor;
         return (ambient + diffuse + specular) * surfaceColor;
     }
@@ -236,68 +224,112 @@ export const CardShaderMaterial = shaderMaterial<CardShaderMaterialUniforms>(
     //----------------------------------------------------
     // MAIN SHADER LOGIC
     //----------------------------------------------------
-    void main() {
-        vec2 uv = vUv;
+    void main() {vec2 uv = vUv;
 
-        // --- Rounded Corners ---
-        vec2 centeredUv = uv - 0.5;
-        vec2 boxHalfSize = vec2(0.5);
-        float clampedRadius = min(uCornerRadius, 0.5);
-        float dist = sdRoundedBox(centeredUv, boxHalfSize, clampedRadius);
-        if (dist > 0.001) { discard; }
-        // --- End Rounded Corners ---
+    vec4 baseColorTex = texture2D(uBaseTexture, uv);
+    vec4 contentColorTex = texture2D(uContentTexture, uv);
+    // For normal map, even if not used actively in static, sample it if lightingMode hints at it
+    // to avoid potential issues if uNormalMap is null and lightingMode expects it.
+    // Or, ensure uNormalMap always has a placeholder.
+    vec4 normalTexSample = texture2D(uNormalMap, uv);
 
-        // Sample base textures
-        vec4 baseColorTex = texture2D(uBaseTexture, uv);
-        vec4 contentColorTex = texture2D(uContentTexture, uv);
-        vec3 sampledNormalTex = texture2D(uNormalMap, uv).rgb;
 
-        // --- Determine Lit Content Color based on uLightingMode ---
-    vec3 litContentColor;
-    vec3 lightDir = normalize(vec3(uMouse.x * 0.6, uMouse.y * 0.6, 0.8));
-    float ambient = 1.0; // Base ambient for content when lit
+    // --- Rounded Corners (applied to both static and active) ---
+    vec2 centeredUv = uv - 0.5;
+    vec2 boxHalfSize = vec2(0.5) - uCornerRadius; 
+    float dist = sdRoundedBox(centeredUv, boxHalfSize, uCornerRadius);
+    if (dist > 0.001) { discard; } // Discard pixels outside rounded rectangle
 
-    if (uLightingMode == 2.0) { // 2.0 == normalMap
-        vec3 processedNormal = normalize(sampledNormalTex * 2.0 - 1.0);
-        float normalMapSpecularStrength = 1.5; 
-        litContentColor = calculateLighting(contentColorTex.rgb, processedNormal, lightDir, vec3(1.0), ambient, normalMapSpecularStrength);
-    } else if (uLightingMode == 1.0) { // 1.0 == flatSheen
-        vec3 flatNormal = vec3(0.5, 0.5, 0.5);
-        float flatSheenSpecularStrength = 0.8; // Potentially too bright
-        litContentColor = calculateLighting(contentColorTex.rgb, flatNormal, lightDir, vec3(1.0), ambient, flatSheenSpecularStrength);
-    } else { // 0.0 == none (or any other value)
-        litContentColor = contentColorTex.rgb * ambient; // This makes it dark
+    // --- Static Card Rendering Path ---
+    // In the STATIC PATH (if (uIsActive < 0.5))
+    if (uIsActive < 0.5) {
+        vec3 baseColor = baseColorTex.rgb;
+        vec3 contentColor = contentColorTex.rgb;
+        float contentAlpha = contentColorTex.a;
+
+        // Apply lighting to the content part
+        float K_ambient = 0.6; // How much ambient light affects the content
+        float K_diffuse = 0.0; // How much diffuse light affects the content
+
+        if (uLightingMode == 1.0) { // flatSheen
+            vec3 staticLightDir = normalize(vec3(0.3, 0.4, 1.0));
+            float NdotL = max(dot(vec3(0.0,0.0,1.0), staticLightDir), 0.0);
+            K_diffuse = NdotL * 0.4; // Contribution from diffuse
+        } else if (uLightingMode == 2.0) { // normalMap
+            vec3 staticLightDir = normalize(vec3(0.3, 0.4, 1.0));
+            vec3 staticNormal = normalize(normalTexSample.rgb * 2.0 - 1.0);
+            float NdotL = max(dot(staticNormal, staticLightDir), 0.0);
+            K_diffuse = NdotL * 0.5; // Contribution from diffuse
+        }
+        
+        // Calculate lit content color: content * (ambient_factor + diffuse_factor)
+        // Ensure the content doesn't become overly dark if K_ambient + K_diffuse is low.
+        // A common way is: ContentColor * AmbientLight + ContentColor * DiffuseLight
+        // Or: ContentColor * (AmbientFactor + DiffuseFactor)
+        // Let's try to make it so it doesn't go darker than a certain base ambient.
+        vec3 litContent = contentColor * (K_ambient + K_diffuse); 
+        // If lighting mode is 'none', K_diffuse is 0, so litContent = contentColor * K_ambient.
+        // If you want 'none' to be brighter, increase K_ambient or handle uLightingMode == 0.0 separately.
+        if (uLightingMode == 0.0) {
+            litContent = contentColor * 0.8; // Or just contentColor if you want it full brightness
+        }
+
+
+        vec3 combinedColor = mix(baseColor, litContent, contentAlpha);
+
+        // Apply cheap static rarity tint
+        vec3 rarityTint = vec3(1.0);
+        if (uRarity >= 0.2 && uRarity < 0.5) { rarityTint = vec3(0.9, 1.0, 0.9); }
+        else if (uRarity >= 0.5 && uRarity < 0.75) { rarityTint = vec3(0.9, 0.9, 1.0); }
+        else if (uRarity >= 0.75) { rarityTint = vec3(1.0, 0.95, 0.85); }
+        combinedColor *= rarityTint;
+        
+        float edgeWidth = 0.005;
+        float finalShapeAlpha = smoothstep(edgeWidth, -edgeWidth, dist);
+
+        gl_FragColor = vec4(clamp(combinedColor, 0.0, 1.0), baseColorTex.a * finalShapeAlpha);
+        return;
     }
-    // --- End Lit Content Color ---
 
-        // --- Base Output (Before Rarity) ---
+        // --- Active Card Rendering Path (Full Original Logic) ---
+        vec3 sampledNormalTex = texture2D(uNormalMap, uv).rgb;
+        vec3 litContentColor;
+        // uMouse is (-1 to 1) for card surface. Adjust for light direction.
+        vec3 lightDir = normalize(vec3(uMouse.x * 0.7, uMouse.y * 0.7, 0.8));
+        float ambientStrength = 0.7; // Ambient for active card content
+
+        if (uLightingMode == 2.0) { // normalMap
+            vec3 processedNormal = normalize(sampledNormalTex * 2.0 - 1.0);
+            litContentColor = calculateLighting(contentColorTex.rgb, processedNormal, lightDir, vec3(1.0), ambientStrength, 1.5);
+        } else if (uLightingMode == 1.0) { // flatSheen
+            vec3 flatNormal = vec3(0.0, 0.0, 1.0);
+            litContentColor = calculateLighting(contentColorTex.rgb, flatNormal, lightDir, vec3(1.0), ambientStrength, 0.9);
+        } else { // none
+            litContentColor = contentColorTex.rgb * ambientStrength;
+        }
+
         vec3 baseOutput = mix(baseColorTex.rgb, litContentColor, contentColorTex.a);
-
-        // --- Calculate Full Rarity Effect (start with base, modify per rarity) ---
         vec3 fullRarityEffectColor = baseOutput;
 
-        // 2. Uncommon
-        if (uRarity >= 0.2 && uRarity < 0.5) {
+        // Rarity effects (only for active cards)
+        if (uRarity >= 0.2 && uRarity < 0.5) { // Uncommon
             vec3 uncommonEffect = calculateUncommonEffect(uv, uTime, uMouse);
             float rarityFade = smoothstep(0.2, 0.35, uRarity) - smoothstep(0.5, 0.6, uRarity);
-            fullRarityEffectColor = mix(fullRarityEffectColor, uncommonEffect, rarityFade);
+            fullRarityEffectColor = mix(fullRarityEffectColor, uncommonEffect, rarityFade * 0.8); // Modulate effect strength
         }
-        // 3. Rare Shimmer + Sheen
-        else if (uRarity >= 0.5 && uRarity < 0.75) {
+        else if (uRarity >= 0.5 && uRarity < 0.75) { // Rare Shimmer + Sheen
             float shimmerStrength = smoothstep(0.5, 0.6, uRarity) - smoothstep(0.75, 0.85, uRarity);
             float shimmer = pow(noise(uv * 6.0 + uTime * 0.2), 10.0) * 0.3;
             shimmer += pow(noise(uv * 12.0 - uTime * 0.1), 16.0) * 0.4;
             fullRarityEffectColor += shimmer * shimmerStrength * 0.8;
 
-            // Additive Rare Sheen (only if normal map lighting is active for detail)
-            if (uLightingMode == 2.0) { // If normalMap lighting is on
+            if (uLightingMode == 2.0) {
                  vec3 processedNormalForSheen = normalize(sampledNormalTex * 2.0 - 1.0);
                  float rareSheenStrength = pow(max(0.0, dot(processedNormalForSheen, normalize(vec3(uMouse.x, uMouse.y, 0.7)))), 4.0);
                  fullRarityEffectColor += vec3(rareSheenStrength * 0.35 * shimmerStrength) * contentColorTex.a;
             }
         }
-        // 4. Legendary Effect
-        else if (uRarity >= 0.75) {
+        else if (uRarity >= 0.75) { // Legendary Effect
             float legendaryStrength = smoothstep(0.75, 0.85, uRarity);
             vec3 color1 = vec3(0.949, 0.561, 0.792);
             vec3 color2 = vec3(0.463, 0.169, 0.690);
@@ -313,17 +345,13 @@ export const CardShaderMaterial = shaderMaterial<CardShaderMaterialUniforms>(
             fullRarityEffectColor = mix(fullRarityEffectColor, legendaryProcColor, legendaryStrength * 0.7);
         }
 
-        // --- Apply Overlay ---
         float overlayMixFactor = mix(1.0, uEffectOverlay, contentColorTex.a);
         vec3 finalColor = mix(baseOutput, fullRarityEffectColor, overlayMixFactor);
+        finalColor += uHover * 0.12; // Hover glow for active card
 
-        // --- Hover Glow ---
-        finalColor += uHover * 0.0;
-
-        // --- Final Output ---
         float edgeWidth = 0.005;
         float finalAlpha = smoothstep(edgeWidth, -edgeWidth, dist);
-        gl_FragColor = vec4(finalColor, baseColorTex.a * finalAlpha);
+        gl_FragColor = vec4(clamp(finalColor, 0.0, 1.0), baseColorTex.a * finalAlpha);
     }
   `
 );
@@ -331,14 +359,15 @@ export const CardShaderMaterial = shaderMaterial<CardShaderMaterialUniforms>(
 extend({ CardShaderMaterial });
 
 // --- Card Mesh Component ---
-function CardMesh({
-  rarity,
-  frontImage,
-  contentImage,
-  contentNormalMap,
-  effectOverlay,
-  cornerRadius,
-  lightingEffect, // <-- Use new prop
+export function CardMesh({
+  rarity = "common", // Default rarity
+  frontImage = "/textures/card_base.png", // Ensure this path is correct relative to public
+  contentImage = "/textures/art/card_art_1.png", // Ensure this path is correct
+  contentNormalMap = "/textures/placeholder_normal.png", // Default to placeholder
+  effectOverlay = 0.0,
+  cornerRadius = 0.05,
+  lightingEffect = "flatSheen",
+  position = [0, 0, 0],
 }: CardMeshProps) {
   const meshRef = React.useRef<THREE.Mesh>(null!);
   const matRef = React.useRef<CardShaderMaterialType>(null!);
@@ -347,11 +376,19 @@ function CardMesh({
   const textures = useTexture([frontImage, contentImage, contentNormalMap]);
   const [baseTex, contentTex, normalMapTexture] = textures;
 
-  textures.forEach((tex) => {
-    if (tex) {
-      tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  React.useLayoutEffect(() => {
+    textures.forEach((tex) => {
+      if (tex) {
+        tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+        // tex.anisotropy = gl.capabilities.getMaxAnisotropy();
+      }
+    });
+    if (matRef.current) {
+      matRef.current.uniforms.uBaseTexture.value = baseTex;
+      matRef.current.uniforms.uContentTexture.value = contentTex;
+      matRef.current.uniforms.uNormalMap.value = normalMapTexture;
     }
-  });
+  }, [textures, baseTex, contentTex, normalMapTexture, gl.capabilities]);
 
   const rarityValue = React.useMemo<number>(() => {
     switch (rarity) {
@@ -371,56 +408,69 @@ function CardMesh({
   const lightingModeValue = React.useMemo<number>(() => {
     if (lightingEffect === "normalMap") return 2.0;
     if (lightingEffect === "flatSheen") return 1.0;
-    return 0.0; // 'none' or any other fallback
+    return 0.0;
   }, [lightingEffect]);
 
-  const [mousePos, setMousePos] = React.useState<{ x: number; y: number }>({
-    x: 0,
-    y: 0,
-  });
-  const [{ rotX, rotY, hover }, api] = useSpring(() => ({
+  const [isActive, setIsActive] = React.useState(false);
+  const localMousePos = React.useRef<THREE.Vector2>(new THREE.Vector2(0, 0));
+
+  const [{ rotX, rotY, scale, hover }, api] = useSpring(() => ({
     rotX: 0,
     rotY: 0,
+    scale: 1,
     hover: 0,
-    config: { mass: 1, tension: 170, friction: 26 },
+    config: { mass: 0.4, tension: 200, friction: 25 },
   }));
 
   useFrame((state, delta) => {
     if (matRef.current) {
       matRef.current.uTime += delta;
-      matRef.current.uMouse.set(mousePos.x, mousePos.y);
+      matRef.current.uIsActive = isActive ? 1.0 : 0.0;
       matRef.current.uHover = (hover as SpringValue<number>).get();
+
+      if (isActive) {
+        matRef.current.uMouse.lerp(localMousePos.current, 0.12);
+      } else {
+        matRef.current.uMouse.lerp(new THREE.Vector2(0, 0), 0.12);
+      }
     }
   });
 
-  const handleMouseMove = (e: ThreeEvent<globalThis.PointerEvent>) => {
-    if (
-      !meshRef.current ||
-      e.intersections.length === 0 ||
-      e.intersections[0].object !== meshRef.current
-    ) {
-      return;
+  const handlePointerMove = (e: ThreeEvent<PointerEvent>) => {
+    if (!isActive || !meshRef.current) return;
+    e.stopPropagation();
+
+    if (e.uv) {
+      const x = e.uv.x * 2 - 1;
+      const y = -(e.uv.y * 2 - 1);
+      localMousePos.current.set(x, y);
+
+      const maxTilt = 20 * (Math.PI / 180);
+      api.start({
+        rotX: y * maxTilt * 0.4,
+        rotY: x * maxTilt * 0.6,
+      });
     }
-    const canvas = gl.domElement;
-    const rect = canvas.getBoundingClientRect();
-    const x = (e.clientX - rect.left) / rect.width;
-    const y = (e.clientY - rect.top) / rect.height;
-    const maxTilt = 15 * (Math.PI / 180);
-    api.start({
-      rotX: (y - 0.5) * maxTilt,
-      rotY: (x - 0.5) * maxTilt,
-    });
-    setMousePos({ x: (x - 0.5) * 2, y: (y - 0.5) * -2 });
   };
 
-  const handleMouseLeave = (e: ThreeEvent<globalThis.PointerEvent>) => {
-    api.start({ rotX: 0, rotY: 0, hover: 0 });
-    setMousePos({ x: 0, y: 0 });
-  };
-
-  const handlePointerEnter = (e: ThreeEvent<globalThis.PointerEvent>) => {
+  const handlePointerEnter = (e: ThreeEvent<PointerEvent>) => {
     if (e.object === meshRef.current) {
-      api.start({ hover: 1 });
+      e.stopPropagation();
+      setIsActive(true);
+      api.start({ scale: 1.08, hover: 1 });
+      document.body.style.cursor = "pointer";
+    }
+  };
+
+  const handlePointerLeave = (e: ThreeEvent<PointerEvent>) => {
+    if (
+      !e.relatedTarget ||
+      !meshRef.current.contains(e.relatedTarget as THREE.Object3D)
+    ) {
+      setIsActive(false);
+      api.start({ rotX: 0, rotY: 0, scale: 1, hover: 0 });
+      localMousePos.current.set(0, 0);
+      document.body.style.cursor = "auto";
     }
   };
 
@@ -431,64 +481,24 @@ function CardMesh({
   return (
     <a.mesh
       ref={meshRef}
+      position={position}
       rotation-x={rotX as any}
       rotation-y={rotY as any}
-      onPointerMove={handleMouseMove}
+      scale={scale as any}
+      onPointerMove={handlePointerMove}
       onPointerEnter={handlePointerEnter}
-      onPointerLeave={handleMouseLeave}
+      onPointerLeave={handlePointerLeave}
     >
-      <planeGeometry args={[cardWidth, cardHeight, 64, 64]} />
+      <planeGeometry args={[cardWidth, cardHeight, 1, 1]} />
       <cardShaderMaterial
         ref={matRef}
-        uBaseTexture={baseTex}
-        uContentTexture={contentTex}
-        uNormalMap={normalMapTexture}
         uRarity={rarityValue}
         transparent={true}
         side={THREE.DoubleSide}
         uEffectOverlay={effectOverlay}
         uCornerRadius={cornerRadius}
-        uLightingMode={lightingModeValue} // <-- Pass new lighting mode uniform
+        uLightingMode={lightingModeValue}
       />
     </a.mesh>
-  );
-}
-
-// --- Main Exported Component ---
-export default function PlayingCard({
-  rarity = "legendary",
-  frontImage = "/textures/card_base.png",
-  contentImage = "/textures/card_content_art.png",
-  contentNormalMap = "/textures/card_content_normal.png",
-  style,
-  effectOverlay = 0.0,
-  cornerRadius = 0.05,
-  lightingEffect = "flatSheen", // <-- Default for new prop
-}: PlayingCardProps) {
-  return (
-    <div
-      style={{ width: "300px", height: "420px", cursor: "pointer", ...style }}
-    >
-      <Canvas
-        camera={{ position: [0, 0, 5], fov: 55 }}
-        dpr={window.devicePixelRatio || 1}
-      >
-        <ambientLight intensity={0.6} />
-        <pointLight position={[10, 10, 10]} intensity={0.8} />
-        <pointLight position={[-10, -5, 5]} intensity={0.5} />
-        <React.Suspense fallback={null}>
-          <CardMesh
-            rarity={rarity}
-            frontImage={frontImage}
-            contentImage={contentImage}
-            contentNormalMap={contentNormalMap}
-            effectOverlay={effectOverlay}
-            cornerRadius={cornerRadius}
-            lightingEffect={lightingEffect} // <-- Pass down new prop
-          />
-        </React.Suspense>
-        {/* <OrbitControls /> */}
-      </Canvas>
-    </div>
   );
 }

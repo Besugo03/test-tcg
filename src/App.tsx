@@ -1,23 +1,60 @@
-import { useState } from "react";
-import reactLogo from "./assets/react.svg";
-import viteLogo from "/vite.svg";
-import "./App.css";
-import PlayingCard from "./PlayingCard";
+// src/App.tsx
+import React from "react";
+import CardGrid from "./CardGrid";
+import { CardMesh } from "./PlayingCard"; // Import CardMesh here
+import "./App.css"; // Or your global stylesheet
 
 function App() {
-  const [count, setCount] = useState(0);
+  // Ensure texture paths are correct relative to your `public` folder
+  const baseCardTexture = "/textures/card_base.png";
+  const placeholderNormal = "/textures/placeholder_normal.png";
+  const artImage1 = "/textures/art/card_art_1.png";
+  const artImage2 = "/textures/art/card_art_1.png";
+  const artImage3 = "/textures/art/card_art_1.png";
+  const normalImage1 = "/textures/normals/card_normal_1.png";
 
   return (
-    <>
-      <h1>New card found!</h1>
-      <h1>Gotoh Hitori</h1>
-      {/* pink text */}
-      <h2 style={{ color: "pink" }}>Rare</h2>
-      {/* flex center */}
-      <div style={{ display: "flex", justifyContent: "center" }}>
-        <PlayingCard />
-      </div>
-    </>
+    <div
+      className="App"
+      style={{
+        width: "100vw",
+        height: "100vh",
+        margin: 0,
+        padding: 0,
+        overflow: "hidden",
+      }}
+    >
+      <CardGrid>
+        <CardMesh
+          key="card-1"
+          position={[-3.75, 0, 0]}
+          rarity="common"
+          lightingEffect="none"
+          frontImage={baseCardTexture}
+          contentImage={artImage1}
+          contentNormalMap={placeholderNormal}
+        />
+        <CardMesh
+          key="card-2"
+          position={[0, 0, 0]}
+          rarity="legendary"
+          lightingEffect="normalMap"
+          frontImage={baseCardTexture}
+          contentImage={artImage2}
+          contentNormalMap={normalImage1} // Assuming this normal map exists
+        />
+        <CardMesh
+          key="card-3"
+          position={[3.75, 0, 0]}
+          rarity="rare"
+          lightingEffect="flatSheen"
+          frontImage={baseCardTexture}
+          contentImage={artImage3}
+          contentNormalMap={placeholderNormal}
+        />
+        {/* Add more CardMesh components as needed */}
+      </CardGrid>
+    </div>
   );
 }
 
