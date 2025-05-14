@@ -1,41 +1,34 @@
 import * as React from "react";
 import { Canvas } from "@react-three/fiber";
-import { OrbitControls } from "@react-three/drei";
+import { OrbitControls } from "@react-three/drei"; // Optional
 
 interface CardGridProps {
-  children: React.ReactNode;
+  children: React.ReactNode; // To accept <CardMesh /> components as children
 }
 
 export default function CardGrid({ children }: CardGridProps) {
-  const cardHeightEstimate = 3 / (2.5 / 3.5);
-  const numRowsEstimate = 1;
+  // Destructure children from props
+  // Card dimensions for camera positioning (can be approximate or removed if not needed)
+  const cardWidth = 3;
+  const cardHeight = cardWidth / (2.5 / 3.5);
+  const numRowsEstimate = 2; // Estimate for camera, or make it a prop
 
   return (
     <div
       style={{
-        width: "100%",
-        height: "100%",
+        width: "100vw",
+        height: "100vh",
         background: "#1c1c1e",
         margin: 0,
         padding: 0,
-        overflow: "hidden",
       }}
     >
       <Canvas
         camera={{
-          position: [0, 0, 15 + (numRowsEstimate * cardHeightEstimate) / 3],
+          position: [0, 0, 15 + (numRowsEstimate * cardHeight) / 2],
           fov: 55,
         }}
         dpr={Math.min(window.devicePixelRatio, 1.5)}
-        gl={{
-          alpha: true, // For transparent canvas background if needed for baking
-          antialias: false, // Antialiasing can sometimes affect pixel-perfect bakes
-          preserveDrawingBuffer: true, // VERY IMPORTANT FOR CAPTURE
-        }}
-        onCreated={({ gl }) => {
-          // Optional: Set clear color for baking if you want a specific background (e.g., fully transparent)
-          gl.setClearColor(0x000000, 0); // Transparent black background
-        }}
       >
         <ambientLight intensity={0.6} />
         <pointLight
@@ -52,7 +45,9 @@ export default function CardGrid({ children }: CardGridProps) {
           color="#aaccff"
         />
 
-        <React.Suspense fallback={null}>{children}</React.Suspense>
+        <React.Suspense fallback={null}>
+          {children} {/* Render the children passed to CardGrid */}
+        </React.Suspense>
         {/* <OrbitControls /> */}
       </Canvas>
     </div>
