@@ -6,13 +6,15 @@ import Tilt from "react-parallax-tilt";
 import { CardMesh } from "./PlayingCard";
 import CardGrid from "./CardGrid";
 import ThreeDCard from "./ThreeDCard";
+import { GyroProvider, GyroToggle } from "./components/GyroProvider";
 
 // Assume your image is in the public folder: /image-to-add.png
 const imageUrl = "/card_art_1.png"; // Replace with your actual image path
 
 function App() {
   return (
-    <>
+    <GyroProvider>
+      <GyroToggle />
       {/* <div
         style={{
           width: "100vw",
@@ -110,11 +112,11 @@ function App() {
       </CardGrid>
       </div> */}
       <div className="flex">
-        <ThreeDCard imageUrl={imageUrl} size={150} />
-        <ThreeDCard imageUrl={imageUrl} />
-        <ThreeDCard imageUrl={imageUrl} size={350} />
+        {/* <ThreeDCard imageUrl={imageUrl} size={150} /> */}
+        {/* <ThreeDCard imageUrl={imageUrl} /> */}
+        <ThreeDCard imageUrl={imageUrl} size={550} />
       </div>
-    </>
+    </GyroProvider>
   );
 }
 

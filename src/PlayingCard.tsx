@@ -4,6 +4,7 @@ import { useTexture, shaderMaterial } from "@react-three/drei";
 import { a, useSpring, SpringValue } from "@react-spring/three";
 import * as THREE from "three";
 import type { ThreeEvent } from "@react-three/fiber";
+import { useGyro } from "./components/GyroProvider";
 
 // --- Type Definitions ---
 type Rarity = "common" | "uncommon" | "rare" | "legendary";
@@ -21,6 +22,7 @@ export interface CardShaderMaterialUniforms {
   uCornerRadius?: number;
   uLightingMode?: number;
   uIsActive?: number; // 0.0 for static, 1.0 for active
+  uAlphaCutoff?: number;
 }
 
 export type CardShaderMaterialType = THREE.ShaderMaterial &
@@ -53,6 +55,8 @@ export const CardShaderMaterial = shaderMaterial<CardShaderMaterialUniforms>(
     uEffectOverlay: 1.0,
     uCornerRadius: 0.05,
     uLightingMode: 2.0, // Default to normalMap lighting
+    uAlphaCutoff: 0.02,
+    uUseHardMask: 1.0,
     uIsActive: 0.0, // Default to inactive/static
   },
   // Vertex Shader
@@ -81,6 +85,8 @@ export const CardShaderMaterial = shaderMaterial<CardShaderMaterialUniforms>(
     uniform float uCornerRadius;
     uniform float uLightingMode; // 0.0 = none, 1.0 = flatSheen, 2.0 = normalMap
     uniform float uIsActive;   // NEW: 0.0 for static, 1.0 for active
+    uniform float uAlphaCutoff; // discard fragments with alpha <= this
+    uniform float uUseHardMask; // 0.0 = soft fade (smoothstep), 1.0 = hard mask using sdRoundedBox
 
     varying vec2 vUv;
 
@@ -238,7 +244,13 @@ export const CardShaderMaterial = shaderMaterial<CardShaderMaterialUniforms>(
     vec2 centeredUv = uv - 0.5;
     vec2 boxHalfSize = vec2(0.5) - uCornerRadius; 
     float dist = sdRoundedBox(centeredUv, boxHalfSize, uCornerRadius);
-    if (dist > 0.001) { discard; } // Discard pixels outside rounded rectangle
+
+    // Hard mask option: if enabled, discard any fragment outside rounded rect immediately.
+    // This prevents any further shader work (lighting/rarity) from affecting the transparent corners.
+    if (uUseHardMask > 0.5) {
+      if (dist > 0.0005) { discard; }
+    }
+    // If uUseHardMask == 0.0, the shader will use a soft smoothstep fade later (for anti-aliased edges).
 
     // --- Static Card Rendering Path ---
     // In the STATIC PATH (if (uIsActive < 0.5))
@@ -284,11 +296,16 @@ export const CardShaderMaterial = shaderMaterial<CardShaderMaterialUniforms>(
         else if (uRarity >= 0.75) { rarityTint = vec3(1.0, 0.95, 0.85); }
         combinedColor *= rarityTint;
         
-        float edgeWidth = 0.005;
+        float edgeWidth = 0.01;
         float finalShapeAlpha = smoothstep(edgeWidth, -edgeWidth, dist);
+        float alpha = baseColorTex.a * finalShapeAlpha;
+        // If alpha is below cutoff, discard the fragment entirely to avoid any bleed
+        if (alpha <= uAlphaCutoff) { discard; }
+        // Premultiply color by alpha so lighting/glow doesn't leak beyond rounded alpha edge
+        vec3 outColor = combinedColor * alpha;
 
-        gl_FragColor = vec4(clamp(combinedColor, 0.0, 1.0), baseColorTex.a * finalShapeAlpha);
-        return;
+        gl_FragColor = vec4(clamp(outColor, 0.0, 1.0), alpha);
+        return; 
     }
 
         // --- Active Card Rendering Path (Full Original Logic) ---
@@ -349,18 +366,21 @@ export const CardShaderMaterial = shaderMaterial<CardShaderMaterialUniforms>(
         vec3 finalColor = mix(baseOutput, fullRarityEffectColor, overlayMixFactor);
         finalColor += uHover * 0.12; // Hover glow for active card
 
-        float edgeWidth = 0.005;
+        float edgeWidth = 0.01;
         float finalAlpha = smoothstep(edgeWidth, -edgeWidth, dist);
-        gl_FragColor = vec4(clamp(finalColor, 0.0, 1.0), baseColorTex.a * finalAlpha);
+        float alpha = baseColorTex.a * finalAlpha;
+        if (alpha <= uAlphaCutoff) { discard; }
+        vec3 outColor = finalColor * alpha; // premultiply so lighting doesn't show beyond alpha
+        gl_FragColor = vec4(clamp(outColor, 0.0, 1.0), alpha);
     }
-  `
+  `,
 );
 
 extend({ CardShaderMaterial });
 
 // --- Card Mesh Component ---
 export function CardMesh({
-  rarity = "common", // Default rarity
+  rarity = "rare", // Default rarity
   frontImage = "/textures/card_base.png", // Ensure this path is correct relative to public
   contentImage = "/textures/art/card_art_1.png", // Ensure this path is correct
   contentNormalMap = "/textures/placeholder_normal.png", // Default to placeholder
@@ -413,13 +433,26 @@ export function CardMesh({
 
   const [isActive, setIsActive] = React.useState(false);
   const localMousePos = React.useRef<THREE.Vector2>(new THREE.Vector2(0, 0));
+  const gyro = useGyro();
+
+  // Sensitivity & smoothing tweaks for snappier, more exaggerated tilt 🔧
+  const TILT_DEGREES = 80; // degrees - max tilt for gyro-driven rotation
+  const maxTilt = TILT_DEGREES * (Math.PI / 180);
+  // Keep multipliers near 1 and use GYRO_SENSITIVITY to amplify small input ranges (e.g. ±0.2 -> ±1.0)
+  const GYRO_MULTIPLIER_X = 1.0; // multiply gyro X for horizontal rotation
+  const GYRO_MULTIPLIER_Y = 1.2; // multiply gyro Y for vertical rotation
+  const GYRO_SENSITIVITY = 500.0; // Amplify small device gyro values (e.g. ±0.2 -> ±1.0)
+  const POINTER_TILT_DEGREES = 45; // degrees for pointer hover
+  const POINTER_LERP = 0.22; // how quickly shader's uMouse follows pointer
+  const GYRO_LERP = 0.28; // how quickly gyro target is smoothed into current
 
   const [{ rotX, rotY, scale, hover }, api] = useSpring(() => ({
     rotX: 0,
     rotY: 0,
     scale: 1,
     hover: 0,
-    config: { mass: 0.4, tension: 200, friction: 25 },
+    // Snappier spring: higher tension and slightly reduced friction for quicker response
+    config: { mass: 0.4, tension: 350, friction: 18 },
   }));
 
   useFrame((state, delta) => {
@@ -428,33 +461,117 @@ export function CardMesh({
       matRef.current.uIsActive = isActive ? 1.0 : 0.0;
       matRef.current.uHover = (hover as SpringValue<number>).get();
 
-      if (isActive) {
-        matRef.current.uMouse.lerp(localMousePos.current, 0.12);
+      if (gyro.enabled) {
+        // Gyro controls card on mobile
+        // Scale & clamp gyro values because device values are typically small (e.g. ±0.2)
+        const sxRaw = gyro.x * GYRO_SENSITIVITY;
+        const syRaw = gyro.y * GYRO_SENSITIVITY;
+        const sx = Math.max(-1, Math.min(1, sxRaw));
+        const sy = Math.max(-1, Math.min(1, syRaw));
+        localMousePos.current.lerp(new THREE.Vector2(sx, sy), GYRO_LERP);
+        api.start({
+          rotX: sy * maxTilt * GYRO_MULTIPLIER_X,
+          rotY: sx * maxTilt * GYRO_MULTIPLIER_Y,
+        });
+        matRef.current.uMouse.lerp(localMousePos.current, GYRO_LERP);
+
+        // Throttled debug logging to inspect values while tuning
+        try {
+          const now = Date.now();
+          if (!(useFrame as any)._gyroLastLog)
+            (useFrame as any)._gyroLastLog = 0;
+          if (now - (useFrame as any)._gyroLastLog > 500) {
+            const rotXdeg = sy * maxTilt * GYRO_MULTIPLIER_X * (180 / Math.PI);
+            const rotYdeg = sx * maxTilt * GYRO_MULTIPLIER_Y * (180 / Math.PI);
+            console.log(
+              "[GyroDebug] raw:",
+              gyro.x.toFixed(3),
+              gyro.y.toFixed(3),
+              "scaled:",
+              sx.toFixed(3),
+              sy.toFixed(3),
+              "rot(deg):",
+              rotXdeg.toFixed(2),
+              rotYdeg.toFixed(2),
+            );
+            (useFrame as any)._gyroLastLog = now;
+          }
+        } catch (err) {
+          /* ignore */
+        }
+      } else if (isActive) {
+        // Pointer-driven; faster follow for a snappier feel
+        matRef.current.uMouse.lerp(localMousePos.current, POINTER_LERP);
       } else {
-        matRef.current.uMouse.lerp(new THREE.Vector2(0, 0), 0.12);
+        matRef.current.uMouse.lerp(new THREE.Vector2(0, 0), POINTER_LERP);
       }
     }
   });
 
-  const handlePointerMove = (e: ThreeEvent<PointerEvent>) => {
-    if (!isActive || !meshRef.current) return;
-    e.stopPropagation();
+  // Helper (JS equivalent of sdRoundedBox used in the shader)
+  const sdRoundedBoxJS = (uv: THREE.Vector2, cornerR: number) => {
+    const px = uv.x - 0.5;
+    const py = uv.y - 0.5;
+    const bx = 0.5 - cornerR;
+    const by = 0.5 - cornerR;
+    const qx = Math.abs(px) - bx + cornerR;
+    const qy = Math.abs(py) - by + cornerR;
+    const mx = Math.min(Math.max(qx, qy), 0.0);
+    const len = Math.hypot(Math.max(qx, 0), Math.max(qy, 0));
+    return mx + len - cornerR;
+  };
 
+  const handlePointerMove = (e: ThreeEvent<PointerEvent>) => {
+    if (!meshRef.current) return;
+
+    // If we have UVs, ensure we're inside the rounded rectangle before responding
     if (e.uv) {
+      const dist = sdRoundedBoxJS(
+        new THREE.Vector2(e.uv.x, e.uv.y),
+        cornerRadius,
+      );
+      if (dist > 0.001) {
+        // Pointer is over a transparent corner — treat as leaving
+        if (isActive) {
+          setIsActive(false);
+          api.start({ rotX: 0, rotY: 0, scale: 1, hover: 0 });
+          localMousePos.current.set(0, 0);
+          document.body.style.cursor = "auto";
+        }
+        return;
+      }
+
+      // Inside the rounded area — activate if not already
+      if (!isActive) {
+        setIsActive(true);
+        api.start({ scale: 1.08, hover: 1 });
+        document.body.style.cursor = "pointer";
+      }
+
+      e.stopPropagation();
       const x = e.uv.x * 2 - 1;
       const y = -(e.uv.y * 2 - 1);
       localMousePos.current.set(x, y);
 
-      const maxTilt = 20 * (Math.PI / 180);
+      const pointerMaxTilt = POINTER_TILT_DEGREES * (Math.PI / 180);
       api.start({
-        rotX: y * maxTilt * 0.4,
-        rotY: x * maxTilt * 0.6,
+        rotX: y * pointerMaxTilt * 0.8,
+        rotY: x * pointerMaxTilt * 1.0,
       });
     }
   };
 
   const handlePointerEnter = (e: ThreeEvent<PointerEvent>) => {
     if (e.object === meshRef.current) {
+      // If we have uv coords, check rounded corner SDF — ignore if in corner
+      if (e.uv) {
+        const dist = sdRoundedBoxJS(
+          new THREE.Vector2(e.uv.x, e.uv.y),
+          cornerRadius,
+        );
+        if (dist > 0.001) return; // entered a transparent corner
+      }
+
       e.stopPropagation();
       setIsActive(true);
       api.start({ scale: 1.08, hover: 1 });
@@ -465,7 +582,9 @@ export function CardMesh({
   const handlePointerLeave = (e: ThreeEvent<PointerEvent>) => {
     if (
       !e.relatedTarget ||
-      !meshRef.current.contains(e.relatedTarget as THREE.Object3D)
+      !meshRef.current.contains(e.relatedTarget as THREE.Object3D) ||
+      (e.uv &&
+        sdRoundedBoxJS(new THREE.Vector2(e.uv.x, e.uv.y), cornerRadius) > 0.001)
     ) {
       setIsActive(false);
       api.start({ rotX: 0, rotY: 0, scale: 1, hover: 0 });
@@ -473,6 +592,21 @@ export function CardMesh({
       document.body.style.cursor = "auto";
     }
   };
+
+  // Toggle active state when gyro is enabled/disabled (mobile)
+  React.useEffect(() => {
+    if (gyro.enabled) {
+      setIsActive(true);
+      api.start({ scale: 1.08, hover: 1 });
+      document.body.style.cursor = "pointer";
+    } else {
+      setIsActive(false);
+      api.start({ rotX: 0, rotY: 0, scale: 1, hover: 0 });
+      localMousePos.current.set(0, 0);
+      document.body.style.cursor = "auto";
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gyro.enabled]);
 
   const cardAspectRatio = 2.5 / 3.5;
   const cardWidth = 3;
@@ -485,6 +619,8 @@ export function CardMesh({
       rotation-x={rotX as any}
       rotation-y={rotY as any}
       scale={scale as any}
+      castShadow={false}
+      receiveShadow={false}
       onPointerMove={handlePointerMove}
       onPointerEnter={handlePointerEnter}
       onPointerLeave={handlePointerLeave}
@@ -494,6 +630,8 @@ export function CardMesh({
         ref={matRef}
         uRarity={rarityValue}
         transparent={true}
+        alphaTest={0.05}
+        depthWrite={true}
         side={THREE.DoubleSide}
         uEffectOverlay={effectOverlay}
         uCornerRadius={cornerRadius}

@@ -1,5 +1,8 @@
 import React from "react";
 import Tilt from "react-parallax-tilt";
+import { useGyro } from "./components/GyroProvider";
+import { Canvas } from "@react-three/fiber";
+import { CardMesh } from "./PlayingCard";
 
 interface CardGridProps {
   imageUrl: string; // URL of the image to be displayed
@@ -7,6 +10,10 @@ interface CardGridProps {
 }
 
 export default function ThreeDCard({ imageUrl, size = 250 }: CardGridProps) {
+  const gyro = useGyro();
+  const rx = -gyro.y * 15; // degrees
+  const ry = gyro.x * 15; // degrees
+
   return (
     <div
       style={{
@@ -29,42 +36,60 @@ export default function ThreeDCard({ imageUrl, size = 250 }: CardGridProps) {
         glareMaxOpacity={0.3}
         glarePosition="all"
         scale={1.0}
+        // when gyro is active we disable the library's mouse tilt so we can control transform directly
+        tiltEnable={!gyro.enabled}
       >
         <div
-          className=" h-[23em] bg-amber-500 shadow-xl rounded-[16px] flex flex-col items-center justify-center text-white relative"
+          className=" h-[23em] bg-amber-500 shadow-xl rounded-[20px] flex flex-col items-center justify-center text-white relative"
           // The `relative` class is important here for absolute positioning of the image
           style={{
             transformStyle: "preserve-3d",
-            perspective: "600px",
-            width: size / 1.4,
+            perspective: "400px",
+            width: size / 1.9,
             height: size,
+            transform: `rotateX(${rx.toFixed(2)}deg) rotateY(${ry.toFixed(2)}deg)`,
+
+            transition: "transform 0.08s linear",
           }}
         >
-          {/* NEW: Image Layer - Positioned visually and with translateZ */}
-          {/* We'll position this image absolutely to center it, then apply translateZ */}
+          {/* WebGL Card Preview - use the real shader-driven CardMesh so you can test rarities */}
           <div
-            // This div wrapper is for positioning and 3D transform.
-            // It needs to be a block or inline-block to respect width/height for centering.
-            className="absolute top-1/2 left-1/2 w-full" // Tailwind for centering via transform
+            className="absolute top-1/2 left-1/2 w-full h-full"
             style={{
-              // The transform below achieves centering AND the 3D effect
-              transform: "translateX(-50%) translateY(-50%) translateZ(30px)",
-              // translateZ(30px) places it between "Del mio pislelo" (0px) and "👀" (60px)
+              transform: "translateX(-50%) translateY(-50%)",
+              pointerEvents: "auto",
             }}
           >
-            <img
-              src={imageUrl}
-              alt="Centered Card Art"
-              className="w-full h-full object-contain rounded-md" // Tailwind for image styling
-              // You might want object-cover or object-contain depending on the image aspect ratio
-            />
+            <div
+              style={{
+                width: "100%",
+                height: "100%",
+                borderRadius: "20px",
+                overflow: "hidden",
+              }}
+            >
+              <Canvas
+                camera={{ position: [0, 0, 6], fov: 50 }}
+                style={{
+                  width: "100%",
+                  height: "100%",
+                  background: "transparent",
+                }}
+              >
+                <ambientLight intensity={0.6} />
+                <pointLight position={[5, 5, 10]} intensity={1.0} />
+                <React.Suspense fallback={null}>
+                  <CardMesh rarity="uncommon" />
+                </React.Suspense>
+              </Canvas>
+            </div>
           </div>
 
-          {/* Inner Layer 3: Closer */}
+          {/* Overlay UI (text) - kept on top of the WebGL canvas */}
           <div
-            className="font-semibold p-1 rounded-xl flex flex-col items-center absolute" // Removed z-index
+            className="font-semibold p-1 rounded-xl flex flex-col items-center absolute"
             style={{
-              transform: `translateZ(60px) translateY(${size / 4}px)`, // Adjusted Y for spacing
+              transform: `translateZ(60px) translateY(${size / 4}px)`,
               background: "rgba(0, 0, 0, 0.3)",
               fontSize: `${size / 250}em`,
             }}
